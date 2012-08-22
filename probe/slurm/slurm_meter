@@ -80,9 +80,9 @@ def userToCER(user, server_id, time_now):
     r.ProbeName('runtime-jobs:sandhills.unl.edu')  # FIXME: Make into variable
     r.VO(user['user'])
     r.Timestamp(str(time_now) + "Z")
-    r.RunningJobs(user['cpus_alloc'])
-    r.TotalJobs(user['cpus_alloc'])
-    r.WaitingJobs(0)                               # FIXME: Get correct data 
+    r.RunningJobs(user['cpus_running'])
+    r.WaitingJobs(user['cpus_pending'])
+    r.TotalJobs(user['cpus_running'] + user['cpus_pending'])
 
     return r
 
@@ -277,20 +277,50 @@ class sacct(object):
 
     def completed_jobs(self, ts):
         where = 'j.time_end >= %s' % long(ts)
-        group = 'id_job'
-        return self._jobs(where, group)
+        return self._jobs(where)
 
     def running_jobs(self):
         where = 'j.time_end = 0'
-        group = 'id_job'
-        return self._jobs(where, group)
+        return self._jobs(where)
 
     def running_users(self):
         where = 'j.time_end = 0'
         group = 'id_user'
-        return self._jobs(where, group)
+        return self._users(where, group)
 
-    def _jobs(self, where, group):
+    def _users(self, where, group):
+        cursor = self._conn.cursor()
+
+        # See enum job_states in slurm/slurm.h for numbers
+        sql = '''SELECT j.id_user
+            , j.id_group
+            , (SELECT SUM(cpus_req)   FROM %(cluster)s_job_table WHERE
+                  id_user = j.id_user AND state IN (0,2)) AS cpus_pending
+            , (SELECT SUM(cpus_alloc) FROM %(cluster)s_job_table WHERE
+                  id_user = j.id_user AND state IN (1)  ) AS cpus_running
+            , a.acct
+            , a.user
+            FROM %(cluster)s_job_table as j
+            LEFT JOIN %(cluster)s_assoc_table AS a ON j.id_assoc = a.id_assoc
+            WHERE j.time_end = 0
+            GROUP BY id_user
+            ORDER BY time_end
+        ''' % { 'cluster': self._cluster }
+
+        DebugPrint(5, "Executing SQL: %s" % sql)
+        cursor.execute(sql)
+
+        for r in cursor:
+            # Add handy data to job record
+            r['cluster'] = self._cluster
+            # Return 0 instead of None where we don't have values
+            if r['cpus_pending'] is None:
+                r['cpus_pending'] = 0
+            if r['cpus_running'] is None:
+                r['cpus_running'] = 0
+            yield r
+
+    def _jobs(self, where):
         cursor = self._conn.cursor()
 
         sql = '''SELECT j.id_job
@@ -298,7 +328,7 @@ class sacct(object):
             , j.id_group
             , j.id_user
             , j.job_name
-            , SUM(j.cpus_alloc) AS cpus_alloc
+            , j.cpus_alloc
             , j.partition
             , j.state
             , j.time_start
@@ -306,16 +336,16 @@ class sacct(object):
             , j.time_suspended
             , a.acct
             , a.user
-            , MAX(s.max_rss) AS max_rss /* Note: Not correct for overlapping multi-step jobs */
+            , MAX(s.max_rss) AS max_rss /* Note: Will underreport jobs containing simultaneous steps */
             , SUM(s.user_sec) + SUM(s.user_usec)/1000000 AS cpu_user
             , SUM(s.sys_sec) + SUM(s.sys_usec)/1000000 AS cpu_sys
             FROM %(cluster)s_job_table as j
             LEFT JOIN %(cluster)s_assoc_table AS a ON j.id_assoc = a.id_assoc
             LEFT JOIN %(cluster)s_step_table AS s ON j.job_db_inx = s.job_db_inx
             WHERE %(where)s
-            GROUP BY %(group)s
+            GROUP BY id_job
             ORDER BY time_end
-        ''' % { 'cluster': self._cluster, 'where': where, 'group': group }
+        ''' % { 'cluster': self._cluster, 'where': where }
 
         DebugPrint(5, "Executing SQL: %s" % sql)
         cursor.execute(sql)
