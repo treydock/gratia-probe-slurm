@@ -15,12 +15,14 @@
 import sys, os, stat
 import socket
 import optparse
-import time
+import time, datetime
 import random
 
 from gratia.common.Gratia import DebugPrint
 import gratia.common.GratiaWrapper as GratiaWrapper
 import gratia.common.Gratia as Gratia
+import gratia.services.ComputeElement as ComputeElement
+import gratia.services.ComputeElementRecord as ComputeElementRecord
 
 import MySQLdb
 import MySQLdb.cursors
@@ -55,6 +57,34 @@ def parse_opts():
         Gratia.Config.set_DebugLevel(5)
 
     return opts, args
+
+def getCE(server_id, cluster, time_now):
+    r = ComputeElement.ComputeElement() 
+
+    r.UniqueID('slurm-running:%s/%s' % (server_id, cluster))
+    r.CEName('sandhills.unl.edu')                  # FIXME: Make into variable
+    r.ProbeName('runtime-jobs:sandhills.unl.edu')  # FIXME: Make into variable
+    r.Cluster('sandhills.unl.edu')                 # FIXME: Make into variable
+    r.HostName('sandhills.unl.edu')                # FIXME: Make into variable
+    r.Timestamp(str(time_now) + "Z")
+    r.LrmsType('SLURM')
+    r.LrmsVersion('2.4.2')                         # FIXME: Make into variable
+    r.Status('Production')                         # FIXME: Make into variable
+
+    return r
+
+def userToCER(user, server_id, time_now):
+    r = ComputeElementRecord.ComputeElementRecord() 
+
+    r.UniqueID('slurm-running:%s/%s' % (server_id, user['cluster']))
+    r.ProbeName('runtime-jobs:sandhills.unl.edu')  # FIXME: Make into variable
+    r.VO(user['user'])
+    r.Timestamp(str(time_now) + "Z")
+    r.RunningJobs(user['cpus_alloc'])
+    r.TotalJobs(user['cpus_alloc'])
+    r.WaitingJobs(0)                               # FIXME: Get correct data 
+
+    return r
 
 def jobToJUR(job, server_id):
     r = Gratia.UsageRecord("Batch")
@@ -119,7 +149,7 @@ def jobToJUR(job, server_id):
 
     # 4.3 Memory
     if job['max_rss']:
-        r.Memory('%dkB' % job['max_rss'], description = "RSS")
+        r.Memory(job['max_rss'], 'kB', description = "RSS")
 
     # 4.4 Swap
     # 4.5 NodeCount
@@ -189,6 +219,13 @@ def main():
     cluster = Gratia.Config.getConfigAttribute('SlurmCluster')
     s = sacct(conn, cluster)
 
+    # Loop over running jobs summarized by user
+    time_now = datetime.datetime.now()
+    Gratia.Send(getCE(server_id, cluster, time_now))
+    for user in s.running_users():
+        r = userToCER(user, server_id, time_now)
+        Gratia.Send(r)
+
     # Loop over completed jobs
     time_end = None
     for job in s.completed_jobs(checkpoint):
@@ -240,13 +277,20 @@ class sacct(object):
 
     def completed_jobs(self, ts):
         where = 'j.time_end >= %s' % long(ts)
-        return self._jobs(where)
+        group = 'id_job'
+        return self._jobs(where, group)
 
     def running_jobs(self):
         where = 'j.time_end = 0'
-        return self._jobs(where)
+        group = 'id_job'
+        return self._jobs(where, group)
 
-    def _jobs(self, where):
+    def running_users(self):
+        where = 'j.time_end = 0'
+        group = 'id_user'
+        return self._jobs(where, group)
+
+    def _jobs(self, where, group):
         cursor = self._conn.cursor()
 
         sql = '''SELECT j.id_job
@@ -254,7 +298,7 @@ class sacct(object):
             , j.id_group
             , j.id_user
             , j.job_name
-            , j.cpus_alloc
+            , SUM(j.cpus_alloc) AS cpus_alloc
             , j.partition
             , j.state
             , j.time_start
@@ -262,16 +306,16 @@ class sacct(object):
             , j.time_suspended
             , a.acct
             , a.user
-            , MAX(s.max_rss) AS max_rss
+            , MAX(s.max_rss) AS max_rss /* Note: Not correct for overlapping multi-step jobs */
             , SUM(s.user_sec) + SUM(s.user_usec)/1000000 AS cpu_user
             , SUM(s.sys_sec) + SUM(s.sys_usec)/1000000 AS cpu_sys
             FROM %(cluster)s_job_table as j
             LEFT JOIN %(cluster)s_assoc_table AS a ON j.id_assoc = a.id_assoc
             LEFT JOIN %(cluster)s_step_table AS s ON j.job_db_inx = s.job_db_inx
             WHERE %(where)s
-            GROUP BY id_job
+            GROUP BY %(group)s
             ORDER BY time_end
-        ''' % { 'cluster': self._cluster, 'where': where }
+        ''' % { 'cluster': self._cluster, 'where': where, 'group': group }
 
         DebugPrint(5, "Executing SQL: %s" % sql)
         cursor.execute(sql)
