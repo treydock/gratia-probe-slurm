@@ -17,6 +17,7 @@ import socket
 import optparse
 import time, datetime
 import random
+import pwd,grp
 
 from gratia.common.Gratia import DebugPrint
 import gratia.common.GratiaWrapper as GratiaWrapper
@@ -220,9 +221,10 @@ def main():
     s = sacct(conn, cluster)
 
     # Loop over running jobs summarized by user
+    # Also include users with jobs completed since the checkpoint
     time_now = datetime.datetime.now()
     Gratia.Send(getCE(server_id, cluster, time_now))
-    for user in s.running_users():
+    for user in s.running_users(checkpoint if opts.checkpoint else None):
         r = userToCER(user, server_id, time_now)
         Gratia.Send(r)
 
@@ -283,15 +285,41 @@ class sacct(object):
         where = 'j.time_end = 0'
         return self._jobs(where)
 
-    def running_users(self):
+    def running_users(self, ts=None):
         where = 'j.time_end = 0'
-        group = 'id_user'
-        return self._users(where, group)
 
-    def _users(self, where, group):
+        # Also include users with recently ended jobs
+        if ts is not None:
+            where = where + " OR j.time_end >= %s" % long(ts)
+
+        group = 'id_user'
+        return self._users(where)
+
+    # Convenience functions to resolve uid/gid to user/group
+    def _getUser(self, uid, err=None):
+        try:
+            return pwd.getpwuid(uid)[0]
+        except (KeyError, TypeError):
+            return err
+    def _getGroup(self, gid, err=None):
+        try:
+            return grp.getgrgid(gid)[0]
+        except (KeyError, TypeError):
+            return err
+
+    # Resolve add user/acct if missing (resolving uid/gid)
+    def _addUserInfoIfMissing(self, r):
+        if r['user'] is None:
+            # Set user to info from NSS, or unknown
+            r['user'] = self._getUser(r['id_user'], 'unknown')
+        if r['acct'] is None:
+            # Set acct to info from NSS, or unknown
+            r['acct'] = self._getUser(r['id_group'], 'unknown')
+
+    def _users(self, where):
         cursor = self._conn.cursor()
 
-        # See enum job_states in slurm/slurm.h for numbers
+        # See enum job_states in slurm/slurm.h for state values
         sql = '''SELECT j.id_user
             , j.id_group
             , (SELECT SUM(cpus_req)   FROM %(cluster)s_job_table WHERE
@@ -302,10 +330,10 @@ class sacct(object):
             , a.user
             FROM %(cluster)s_job_table as j
             LEFT JOIN %(cluster)s_assoc_table AS a ON j.id_assoc = a.id_assoc
-            WHERE j.time_end = 0
+            WHERE %(where)s
             GROUP BY id_user
             ORDER BY time_end
-        ''' % { 'cluster': self._cluster }
+        ''' % { 'cluster': self._cluster, 'where': where }
 
         DebugPrint(5, "Executing SQL: %s" % sql)
         cursor.execute(sql)
@@ -318,6 +346,7 @@ class sacct(object):
                 r['cpus_pending'] = 0
             if r['cpus_running'] is None:
                 r['cpus_running'] = 0
+            self._addUserInfoIfMissing(r)
             yield r
 
     def _jobs(self, where):
@@ -353,6 +382,7 @@ class sacct(object):
         for r in cursor:
             # Add handy data to job record
             r['cluster'] = self._cluster
+            self._addUserInfoIfMissing(r)
             yield r
 
 if __name__ == "__main__":
