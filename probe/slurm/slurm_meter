@@ -222,7 +222,7 @@ def main():
 
     # Loop over running jobs summarized by user
     # Also include users with jobs completed since the checkpoint
-    time_now = datetime.datetime.now()
+    time_now = datetime.datetime.utcnow()
     Gratia.Send(getCE(server_id, cluster, time_now))
     for user in s.running_users(checkpoint if opts.checkpoint else None):
         r = userToCER(user, server_id, time_now)
@@ -285,6 +285,7 @@ class sacct(object):
         where = 'j.time_end = 0'
         return self._jobs(where)
 
+    # Running jobs, grouped by user
     def running_users(self, ts=None):
         where = 'j.time_end = 0'
 
@@ -307,7 +308,7 @@ class sacct(object):
         except (KeyError, TypeError):
             return err
 
-    # Resolve add user/acct if missing (resolving uid/gid)
+    # Add user/acct if missing (resolving uid/gid)
     def _addUserInfoIfMissing(self, r):
         if r['user'] is None:
             # Set user to info from NSS, or unknown
