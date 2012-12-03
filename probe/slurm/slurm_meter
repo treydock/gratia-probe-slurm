@@ -17,7 +17,7 @@ import socket
 import optparse
 import time, datetime
 import random
-import pwd,grp
+import pwd, grp
 
 from gratia.common.Gratia import DebugPrint
 import gratia.common.GratiaWrapper as GratiaWrapper
@@ -122,9 +122,9 @@ def jobToJUR(job, server_id):
 
     # 3.11 CpuDuration
     if job['cpu_user']:
-        r.CpuDuration(float(job['cpu_user']),"user","Was entered in seconds")
+        r.CpuDuration(float(job['cpu_user']), "user", "Was entered in seconds")
     if job['cpu_sys']:
-        r.CpuDuration(float(job['cpu_sys']),"system","Was entered in seconds")
+        r.CpuDuration(float(job['cpu_sys']), "system", "Was entered in seconds")
 
     # 3.12 EndTime
     r.EndTime(job['time_end'],"Was entered in seconds")
@@ -170,7 +170,7 @@ def main():
     try:
         opts, args = parse_opts()
     except Exception, e:
-        print >>sys.stderr, str(e)
+        print >> sys.stderr, str(e)
         sys.exit(1)
 
     # Sanity checks for the probe's runtime environment.
@@ -193,14 +193,14 @@ def main():
     # Read the checkpoint
     cpfile = None
     if opts.checkpoint:	
-        checkpointFile = os.path.join(
+        checkpoint_file = os.path.join(
             Gratia.Config.get_WorkingFolder(), "checkpoint")
-        DebugPrint(1, "Resuming from checkpoint in %s" % checkpointFile)
+        DebugPrint(1, "Resuming from checkpoint in %s" % checkpoint_file)
         try:
-            cpfile = open(checkpointFile, 'a+')
+            cpfile = open(checkpoint_file, 'a+')
             checkpoint = long(cpfile.readline())
         except (IOError, ValueError):
-            DebugPrint(1, "Failed to read checkpoint file %s" % checkpointFile)
+            DebugPrint(1, "Failed to read checkpoint file %s" % checkpoint_file)
 
     # Server ID - server/port/database
     server_id = "/".join([
