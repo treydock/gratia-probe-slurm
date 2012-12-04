@@ -315,7 +315,7 @@ class sacct(object):
             r['user'] = self._getUser(r['id_user'], 'unknown')
         if r['acct'] is None:
             # Set acct to info from NSS, or unknown
-            r['acct'] = self._getUser(r['id_group'], 'unknown')
+            r['acct'] = self._getGroup(r['id_group'], 'unknown')
 
     def _users(self, where):
         cursor = self._conn.cursor()
