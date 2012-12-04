@@ -1,0 +1,91 @@
+#!/usr/bin/python
+# /* vim: set expandtab tabstop=4 shiftwidth=4 softtabstop=4: */
+
+###########################################################################
+# slurm_meter
+#
+# Python-based probe for SLURM accounting database
+# 
+# John Thiltges, 2012-Jun-19
+# Based on condor_meter by Brian Bockelman
+# 
+# Copyright 2012 University of Nebraska-Lincoln. Released under GPL v2.
+###########################################################################
+
+from SlurmProbe import SlurmProbe
+
+import sys, os
+import optparse
+import time, datetime
+import random
+
+from gratia.common.Gratia import DebugPrint
+import gratia.common.GratiaWrapper as GratiaWrapper
+import gratia.common.Gratia as Gratia
+import gratia.services.ComputeElement as ComputeElement
+import gratia.services.ComputeElementRecord as ComputeElementRecord
+
+prog_version = "%%%RPMVERSION%%%"
+prog_revision = '$Revision$'
+
+
+def get_ce(server_id, cluster, time_now):
+    r = ComputeElement.ComputeElement() 
+
+    r.UniqueID('slurm-running:%s/%s' % (server_id, cluster))
+    r.CEName('sandhills.unl.edu')                  # FIXME: Make into variable
+    r.ProbeName('runtime-jobs:sandhills.unl.edu')  # FIXME: Make into variable
+    r.Cluster('sandhills.unl.edu')                 # FIXME: Make into variable
+    r.HostName('sandhills.unl.edu')                # FIXME: Make into variable
+    r.Timestamp(str(time_now) + "Z")
+    r.LrmsType('SLURM')
+    r.LrmsVersion('2.4.2')                         # FIXME: Make into variable
+    r.Status('Production')                         # FIXME: Make into variable
+
+    return r
+
+def user_to_cer(user, server_id, time_now):
+    r = ComputeElementRecord.ComputeElementRecord() 
+
+    r.UniqueID('slurm-running:%s/%s' % (server_id, user['cluster']))
+    r.ProbeName('runtime-jobs:sandhills.unl.edu')  # FIXME: Make into variable
+    r.VO(user['user'])
+    r.Timestamp(str(time_now) + "Z")
+    r.RunningJobs(user['cpus_running'])
+    r.WaitingJobs(user['cpus_pending'])
+    r.TotalJobs(user['cpus_running'] + user['cpus_pending'])
+
+    return r
+
+class SlurmRunning(SlurmProbe):
+    def parse_opts(self):
+        parser = optparse.OptionParser(usage="%prog [options]")
+        parser.add_option("-f", "--gratia_config", help="Location of the Gratia"
+            " config [default: %default].",
+            dest="gratia_config", default="/etc/gratia/slurm-running/ProbeConfig")
+        parser.add_option("-s", "--sleep", help="Do a random amount of sleep, "
+            "up to the specified number of seconds before running.",
+            dest="sleep", default=0, type="int")
+        parser.add_option("-v", "--verbose", help="Enable verbose logging to "
+            "stdout.",
+            default=False, action="store_true", dest="verbose")
+        parser.add_option("-c", "--checkpoint", help="Only reports records past"
+            " checkpoint; default is to report all records.",
+            default=False, action="store_true", dest="checkpoint")
+
+        return parser.parse_args()
+
+    def main(self):
+        # Loop over running jobs summarized by user
+        # Also include users with jobs completed since the checkpoint
+        time_now = datetime.datetime.utcnow()
+        server_id = self.get_db_server_id()
+        Gratia.Send(get_ce(server_id, self.cluster, time_now))
+        for user in self.sacct.running_users(self.checkpoint if self.opts.checkpoint else None):
+            r = user_to_cer(user, server_id, time_now)
+            Gratia.Send(r)
+
+        self.write_checkpoint(self.cpfile, time_now)
+
+if __name__ == "__main__":
+    SlurmRunning().main()
