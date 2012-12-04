@@ -13,17 +13,14 @@
 ###########################################################################
 
 import sys, os, stat
-import socket
 import optparse
-import time, datetime
+import time
 import random
 import pwd, grp
 
 from gratia.common.Gratia import DebugPrint
 import gratia.common.GratiaWrapper as GratiaWrapper
 import gratia.common.Gratia as Gratia
-import gratia.services.ComputeElement as ComputeElement
-import gratia.services.ComputeElementRecord as ComputeElementRecord
 
 import MySQLdb
 import MySQLdb.cursors
@@ -58,34 +55,6 @@ def parse_opts():
         Gratia.Config.set_DebugLevel(5)
 
     return opts, args
-
-def getCE(server_id, cluster, time_now):
-    r = ComputeElement.ComputeElement() 
-
-    r.UniqueID('slurm-running:%s/%s' % (server_id, cluster))
-    r.CEName('sandhills.unl.edu')                  # FIXME: Make into variable
-    r.ProbeName('runtime-jobs:sandhills.unl.edu')  # FIXME: Make into variable
-    r.Cluster('sandhills.unl.edu')                 # FIXME: Make into variable
-    r.HostName('sandhills.unl.edu')                # FIXME: Make into variable
-    r.Timestamp(str(time_now) + "Z")
-    r.LrmsType('SLURM')
-    r.LrmsVersion('2.4.2')                         # FIXME: Make into variable
-    r.Status('Production')                         # FIXME: Make into variable
-
-    return r
-
-def userToCER(user, server_id, time_now):
-    r = ComputeElementRecord.ComputeElementRecord() 
-
-    r.UniqueID('slurm-running:%s/%s' % (server_id, user['cluster']))
-    r.ProbeName('runtime-jobs:sandhills.unl.edu')  # FIXME: Make into variable
-    r.VO(user['user'])
-    r.Timestamp(str(time_now) + "Z")
-    r.RunningJobs(user['cpus_running'])
-    r.WaitingJobs(user['cpus_pending'])
-    r.TotalJobs(user['cpus_running'] + user['cpus_pending'])
-
-    return r
 
 def jobToJUR(job, server_id):
     r = Gratia.UsageRecord("Batch")
@@ -219,14 +188,6 @@ def main():
 
     cluster = Gratia.Config.getConfigAttribute('SlurmCluster')
     s = sacct(conn, cluster)
-
-    # Loop over running jobs summarized by user
-    # Also include users with jobs completed since the checkpoint
-    time_now = datetime.datetime.utcnow()
-    Gratia.Send(getCE(server_id, cluster, time_now))
-    for user in s.running_users(checkpoint if opts.checkpoint else None):
-        r = userToCER(user, server_id, time_now)
-        Gratia.Send(r)
 
     # Loop over completed jobs
     time_end = None
