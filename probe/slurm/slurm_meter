@@ -14,7 +14,7 @@
 
 from SlurmProbe import SlurmProbe
 
-import os, optparse
+import optparse
 import gratia.common.Gratia as Gratia
 
 def job_to_jur(job, server_id):
@@ -123,6 +123,8 @@ class SlurmMeter(SlurmProbe):
             r = job_to_jur(job, server_id)
             Gratia.Send(r)
 
+            # The query sorted the results by time_end, so our last value will
+            # be the greatest
             time_end = job['time_end']
             self.checkpoint.val = time_end
 

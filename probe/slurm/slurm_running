@@ -15,7 +15,7 @@
 from SlurmProbe import SlurmProbe
 
 import optparse
-import datetime, time
+import datetime
 
 import gratia.common.Gratia as Gratia
 import gratia.services.ComputeElement as ComputeElement
@@ -70,6 +70,7 @@ class SlurmRunning(SlurmProbe):
 
     def main(self):
         time_now = datetime.datetime.utcnow()
+        time_end = None
         server_id = self.get_db_server_id()
         slurm_version = self.get_slurm_version()
 
@@ -82,9 +83,16 @@ class SlurmRunning(SlurmProbe):
             r = user_to_cer(user, server_id, time_now)
             Gratia.Send(r)
 
-        # Set checkpoint for (now - 300sec). This gives us a bit of room in
-        # case jobs completed but weren't reported to the database yet
-        self.checkpoint.val = time.mktime(time_now.timetuple()) - 300
+            # The query sorted the results by time_end, so our last value will
+            # be the greatest
+            time_end = user['time_end']
+
+        # If we found at least one record, but the time_end has not increased since
+        # the previous run, increase the checkpoint by one so we avoid continually
+        # reprocessing the last records.
+        # (This assumes the probe won't be run more than once per second.)
+        if self.checkpoint.val == time_end:
+            self.checkpoint.val = time_end + 1
 
 if __name__ == "__main__":
     SlurmRunning().main()

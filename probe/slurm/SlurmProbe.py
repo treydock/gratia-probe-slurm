@@ -196,6 +196,7 @@ class SlurmAcct(object):
         self._cluster = cluster
 
     def completed_jobs(self, ts):
+        """Completed jobs, ordered by completion time"""
         where = 'j.time_end >= %s' % long(ts)
         return self._jobs(where)
 
@@ -204,7 +205,7 @@ class SlurmAcct(object):
         return self._jobs(where)
 
     def running_users(self, ts=None):
-        """Running jobs, grouped by user"""
+        """Running jobs, grouped by user, ordered by completion time"""
         where = 'j.time_end = 0'
 
         # Also include users with recently ended jobs
@@ -245,6 +246,7 @@ class SlurmAcct(object):
                   id_user = j.id_user AND state IN (0,2)) AS cpus_pending
             , (SELECT SUM(cpus_alloc) FROM %(cluster)s_job_table WHERE
                   id_user = j.id_user AND state IN (1)  ) AS cpus_running
+            , MAX(j.time_end) AS time_end
             , a.acct
             , a.user
             FROM %(cluster)s_job_table as j
