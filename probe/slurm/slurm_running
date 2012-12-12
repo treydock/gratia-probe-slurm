@@ -14,13 +14,9 @@
 
 from SlurmProbe import SlurmProbe
 
-import sys, os
 import optparse
-import time, datetime
-import random
+import datetime
 
-from gratia.common.Gratia import DebugPrint
-import gratia.common.GratiaWrapper as GratiaWrapper
 import gratia.common.Gratia as Gratia
 import gratia.services.ComputeElement as ComputeElement
 import gratia.services.ComputeElementRecord as ComputeElementRecord
@@ -73,6 +69,7 @@ class SlurmRunning(SlurmProbe):
             " checkpoint; default is to report all records.",
             default=False, action="store_true", dest="checkpoint")
 
+        # Options are stored into opts/args class variables
         return parser.parse_args()
 
     def main(self):
@@ -81,11 +78,11 @@ class SlurmRunning(SlurmProbe):
         time_now = datetime.datetime.utcnow()
         server_id = self.get_db_server_id()
         Gratia.Send(get_ce(server_id, self.cluster, time_now))
-        for user in self.sacct.running_users(self.checkpoint if self.opts.checkpoint else None):
+        for user in self.sacct.running_users(self.checkpoint.val if self.opts.checkpoint else None):
             r = user_to_cer(user, server_id, time_now)
             Gratia.Send(r)
 
-        self.write_checkpoint(self.cpfile, time_now)
+        self.checkpoint.val = time_now
 
 if __name__ == "__main__":
     SlurmRunning().main()

@@ -32,7 +32,6 @@ class SlurmProbe:
     opts       = None
     args       = None
     checkpoint = None
-    cpfile     = None
     conn       = None
     cluster    = None
     sacct      = None
@@ -64,24 +63,22 @@ class SlurmProbe:
         # Make sure we have an exclusive lock for this probe.
         GratiaWrapper.ExclusiveLock()
 
-        self.register_gratia()
+        self.register_gratia("slurm_meter")
 
-        # Only process DataFileExpiration days of history
-        # (unless we're resuming from a checkpoint file)
-        self.checkpoint = int(time.time() - (Gratia.Config.get_DataFileExpiration() * 86400))
-
-        # TODO: Put checkpoint read/write into a class
-        # Read the checkpoint
-        self.cpfile = None
+        # Find the checkpoint filename (if enabled)
         if self.opts.checkpoint:	
             checkpoint_file = os.path.join(
                 Gratia.Config.get_WorkingFolder(), "checkpoint")
-            DebugPrint(1, "Resuming from checkpoint in %s" % checkpoint_file)
-            try:
-                self.cpfile = open(checkpoint_file, 'a+')
-                self.checkpoint = long(self.cpfile.readline())
-            except (IOError, ValueError):
-                DebugPrint(1, "Failed to read checkpoint file %s" % checkpoint_file)
+        else:
+            checkpoint_file = None
+
+        # Open the checkpoint file
+        self.checkpoint = SlurmCheckpoint(checkpoint_file)
+
+        # Only process DataFileExpiration days of history
+        # (unless we're resuming from a checkpoint file)
+        if self.checkpoint.val is None:
+            self.checkpoint.val = int(time.time() - (Gratia.Config.get_DataFileExpiration() * 86400))
 
         # Connect to database
         self.conn = self.get_db_conn()
@@ -111,16 +108,6 @@ class SlurmProbe:
             db     = Gratia.Config.getConfigAttribute('SlurmDbName'),
             cursorclass = MySQLdb.cursors.DictCursor)
 
-    def write_checkpoint(self, fp, val):
-        """Write a checkpoint value to the filehandle"""
-        if (fp):
-            try:
-                fp.truncate(0)
-                fp.write(str(val) + "\n")
-            except IOError:
-                DebugPrint(2, "IOError: Failed to write checkpoint file %s" %
-                    fp.name)
-
     def get_password(self, pwfile):
         """Read a password from a given file, checking permissions"""
         fp = open(pwfile)
@@ -132,13 +119,52 @@ class SlurmProbe:
 
         return fp.readline().rstrip('\n')
 
-    def register_gratia(self):
-        # FIXME: Use arguments
-
-        Gratia.RegisterReporter("slurm_meter", "%s (tag %s)" % \
+    def register_gratia(self, name):
+        Gratia.RegisterReporter(name, "%s (tag %s)" % \
             (prog_revision, prog_version))
 
         Gratia.setProbeBatchManager("slurm")
+
+class SlurmCheckpoint(object):
+    """Read and write a checkpoint file
+    If class is instantiated without a filename, class works as expected but
+    data is not stored to disk
+    """
+
+    _val = None
+    _fp  = None
+
+    def __init__(self, target=None):
+        """
+        Create a checkpoint file
+        target - checkpoint filename (optionally null)
+        """
+        if target:
+            try:
+                self._fp  = open(target, 'a+')
+                self._val = long(self._fp.readline())
+                DebugPrint(1, "Resuming from checkpoint in %s" % target)
+            except IOError:
+                raise IOError("Could not open checkpoint file %s" % target)
+            except ValueError:
+                DebugPrint(1, "Failed to read checkpoint file %s" % target)
+
+    def get_val(self):
+        """Get checkpoint value"""
+        return self._val
+
+    def set_val(self, val):
+        """Set checkpoint value"""
+        self._val = long(val)
+        if (self._fp):
+            try:
+                self._fp.truncate(0)
+                self._fp.write(str(self._val) + "\n")
+            except IOError:
+                DebugPrint(2, "IOError: Failed to write checkpoint file %s" %
+                    self._fp.name)
+
+    val = property(get_val, set_val)
 
 class SlurmAcct(object):
     def __init__(self, conn, cluster):

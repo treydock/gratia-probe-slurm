@@ -115,25 +115,26 @@ class SlurmMeter(SlurmProbe):
             " checkpoint; default is to report all records.",
             default=False, action="store_true", dest="checkpoint")
 
+        # Options are stored into opts/args class variables
         return parser.parse_args()
 
     def main(self):
         # Loop over completed jobs
         time_end = None
         server_id = self.get_db_server_id()
-        for job in self.sacct.completed_jobs(self.checkpoint):
+        for job in self.sacct.completed_jobs(self.checkpoint.val):
             r = job_to_jur(job, server_id)
             Gratia.Send(r)
 
             time_end = job['time_end']
-            self.write_checkpoint(self.cpfile, time_end)
+            self.checkpoint.val = time_end
 
         # If we found at least one record, but the time_end has not increased since
         # the previous run, increase the checkpoint by one so we avoid continually
         # reprocessing the last records.
         # (This assumes the probe won't be run more than once per second.)
-        if self.checkpoint == time_end:
-            self.write_checkpoint(self.cpfile, time_end + 1)
+        if self.checkpoint.val == time_end:
+            self.checkpoint.val = time_end + 1
 
 if __name__ == "__main__":
     SlurmMeter().main()
