@@ -17,9 +17,6 @@ from SlurmProbe import SlurmProbe
 import os, optparse
 import gratia.common.Gratia as Gratia
 
-prog_version = "%%%RPMVERSION%%%"
-prog_revision = '$Revision$'
-
 def job_to_jur(job, server_id):
     """Convert a SLURM job record into a Gratia UsageRecord"""
     r = Gratia.UsageRecord("Batch")

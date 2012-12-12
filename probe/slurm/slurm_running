@@ -15,28 +15,25 @@
 from SlurmProbe import SlurmProbe
 
 import optparse
-import datetime
+import datetime, time
 
 import gratia.common.Gratia as Gratia
 import gratia.services.ComputeElement as ComputeElement
 import gratia.services.ComputeElementRecord as ComputeElementRecord
 
-prog_version = "%%%RPMVERSION%%%"
-prog_revision = '$Revision$'
 
-
-def get_ce(server_id, cluster, time_now):
+def get_ce(server_id, slurm_version, cluster, time_now):
     r = ComputeElement.ComputeElement() 
 
+    ce_name = Gratia.Config.getConfigAttribute('CEName')
+
     r.UniqueID('slurm-running:%s/%s' % (server_id, cluster))
-    r.CEName('sandhills.unl.edu')                  # FIXME: Make into variable
-    r.ProbeName('runtime-jobs:sandhills.unl.edu')  # FIXME: Make into variable
-    r.Cluster('sandhills.unl.edu')                 # FIXME: Make into variable
-    r.HostName('sandhills.unl.edu')                # FIXME: Make into variable
+    r.CEName(ce_name)
+    r.Cluster(ce_name)
+    r.HostName(ce_name)
     r.Timestamp(str(time_now) + "Z")
     r.LrmsType('SLURM')
-    r.LrmsVersion('2.4.2')                         # FIXME: Make into variable
-    r.Status('Production')                         # FIXME: Make into variable
+    r.LrmsVersion(slurm_version)
 
     return r
 
@@ -44,7 +41,6 @@ def user_to_cer(user, server_id, time_now):
     r = ComputeElementRecord.ComputeElementRecord() 
 
     r.UniqueID('slurm-running:%s/%s' % (server_id, user['cluster']))
-    r.ProbeName('runtime-jobs:sandhills.unl.edu')  # FIXME: Make into variable
     r.VO(user['user'])
     r.Timestamp(str(time_now) + "Z")
     r.RunningJobs(user['cpus_running'])
@@ -73,16 +69,22 @@ class SlurmRunning(SlurmProbe):
         return parser.parse_args()
 
     def main(self):
-        # Loop over running jobs summarized by user
-        # Also include users with jobs completed since the checkpoint
         time_now = datetime.datetime.utcnow()
         server_id = self.get_db_server_id()
-        Gratia.Send(get_ce(server_id, self.cluster, time_now))
+        slurm_version = self.get_slurm_version()
+
+        # Send ComputeElement
+        Gratia.Send(get_ce(server_id, slurm_version, self.cluster, time_now))
+
+        # Loop over running jobs summarized by user, sending CERs
+        # Also include users with jobs completed since the checkpoint
         for user in self.sacct.running_users(self.checkpoint.val if self.opts.checkpoint else None):
             r = user_to_cer(user, server_id, time_now)
             Gratia.Send(r)
 
-        self.checkpoint.val = time_now
+        # Set checkpoint for (now - 300sec). This gives us a bit of room in
+        # case jobs completed but weren't reported to the database yet
+        self.checkpoint.val = time.mktime(time_now.timetuple()) - 300
 
 if __name__ == "__main__":
     SlurmRunning().main()

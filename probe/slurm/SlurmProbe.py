@@ -119,6 +119,28 @@ class SlurmProbe:
 
         return fp.readline().rstrip('\n')
 
+    def get_slurm_version(self):
+        prog = "srun --version"
+        path = Gratia.Config.getConfigAttribute("SlurmLocation")
+        fd = None
+
+        # Look for the program on the $PATH
+        cmd = prog
+
+        # Unless there is a specific path configured
+        if path:
+            c = os.path.join(path, "bin", prog)
+            if os.path.exists(c):
+                cmd = c
+
+        fd = os.popen(prog)
+        output = fd.read()
+        if fd.close():
+            raise Exception("Unable to invoke %s" % cmd)
+
+        name, version = output.split()
+        return version
+
     def register_gratia(self, name):
         Gratia.RegisterReporter(name, "%s (tag %s)" % \
             (prog_revision, prog_version))
