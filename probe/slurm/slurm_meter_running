@@ -2,9 +2,10 @@
 # /* vim: set expandtab tabstop=4 shiftwidth=4 softtabstop=4: */
 
 ###########################################################################
-# slurm_meter
+# slurm_meter_running
 #
-# Python-based probe for SLURM accounting database
+# Python-based Gratia probe for SLURM accounting database
+# This probe reports ComputeElementRecords for running and waiting jobs
 # 
 # John Thiltges, 2012-Jun-19
 # Based on condor_meter by Brian Bockelman
@@ -49,7 +50,7 @@ def user_to_cer(user, server_id, time_now):
 
     return r
 
-class SlurmRunning(SlurmProbe):
+class SlurmMeterRunning(SlurmProbe):
     def parse_opts(self):
         parser = optparse.OptionParser(usage="%prog [options]")
         parser.add_option("-f", "--gratia_config", help="Location of the Gratia"
@@ -95,4 +96,4 @@ class SlurmRunning(SlurmProbe):
             self.checkpoint.val = time_end + 1
 
 if __name__ == "__main__":
-    SlurmRunning().main()
+    SlurmMeterRunning().main()

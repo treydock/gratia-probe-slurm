@@ -145,6 +145,13 @@ class SlurmProbe:
         Gratia.RegisterReporter(name, "%s (tag %s)" % \
             (prog_revision, prog_version))
 
+        try:
+            slurm_version = self.get_slurm_version()
+        except Exception, e:
+            DebugPrint(0, "Unable to get SLURM version: %s" % str(e))
+            raise
+
+        Gratia.RegisterService("SLURM", slurm_version)
         Gratia.setProbeBatchManager("slurm")
 
 class SlurmCheckpoint(object):

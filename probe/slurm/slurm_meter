@@ -4,7 +4,7 @@
 ###########################################################################
 # slurm_meter
 #
-# Python-based probe for SLURM accounting database
+# Python-based Gratia probe for SLURM accounting database
 # 
 # John Thiltges, 2012-Jun-19
 # Based on condor_meter by Brian Bockelman
