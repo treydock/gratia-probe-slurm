@@ -170,7 +170,8 @@ class SlurmCheckpoint(object):
         """
         if target:
             try:
-                self._fp  = open(target, 'a+')
+                fd        = os.open(target, os.O_RDWR | os.O_CREAT)
+                self._fp  = os.fdopen(fd, 'r+')
                 self._val = long(self._fp.readline())
                 DebugPrint(1, "Resuming from checkpoint in %s" % target)
             except IOError:
@@ -186,12 +187,9 @@ class SlurmCheckpoint(object):
         """Set checkpoint value"""
         self._val = long(val)
         if (self._fp):
-            try:
-                self._fp.truncate(0)
-                self._fp.write(str(self._val) + "\n")
-            except IOError:
-                DebugPrint(2, "IOError: Failed to write checkpoint file %s" %
-                    self._fp.name)
+            self._fp.seek(0)
+            self._fp.write(str(self._val).ljust(20) + "\n")
+            self._fp.truncate()
 
     val = property(get_val, set_val)
 
