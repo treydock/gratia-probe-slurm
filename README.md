@@ -69,7 +69,7 @@ running jobs probe.
 		<th>Description</th>
 	</tr>
 	<tr>
-		<td>CEName="cluster.example.edu"</td>
+		<td>SlurmCEName="cluster.example.edu"</td>
 		<td>The FQDN of the cluster</td>
 	</tr>
 </table>

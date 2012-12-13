@@ -26,7 +26,7 @@ import gratia.services.ComputeElementRecord as ComputeElementRecord
 def get_ce(server_id, slurm_version, cluster, time_now):
     r = ComputeElement.ComputeElement() 
 
-    ce_name = Gratia.Config.getConfigAttribute('CEName')
+    ce_name = Gratia.Config.getConfigAttribute('SlurmCEName')
 
     r.UniqueID('slurm-running:%s/%s' % (server_id, cluster))
     r.CEName(ce_name)
