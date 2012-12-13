@@ -4,7 +4,7 @@
 ###########################################################################
 # slurm_meter
 #
-# Python-based probe for SLURM accounting database
+# Python-based Gratia probe for SLURM accounting database
 # 
 # John Thiltges, 2012-Jun-19
 # Based on condor_meter by Brian Bockelman
@@ -12,51 +12,13 @@
 # Copyright 2012 University of Nebraska-Lincoln. Released under GPL v2.
 ###########################################################################
 
-import sys, os, stat
-import optparse
-import time
-import random
-import pwd, grp
+from SlurmProbe import SlurmProbe
 
-from gratia.common.Gratia import DebugPrint
-import gratia.common.GratiaWrapper as GratiaWrapper
+import optparse
 import gratia.common.Gratia as Gratia
 
-import MySQLdb
-import MySQLdb.cursors
-import re
-
-prog_version = "%%%RPMVERSION%%%"
-prog_revision = '$Revision$'
-
-def parse_opts():
-
-    parser = optparse.OptionParser(usage="%prog [options]")
-    parser.add_option("-f", "--gratia_config", help="Location of the Gratia config; "
-        "defaults to /etc/gratia/slurm/ProbeConfig.", dest="gratia_config",
-        default="/etc/gratia/slurm/ProbeConfig")
-    parser.add_option("-s", "--sleep", help="Do a random amount of sleep, up to the"
-        " specified number of seconds before running.", dest="sleep",
-        default=0, type="int")
-    parser.add_option("-v", "--verbose", help="Enable verbose logging to stdout.",
-        default=False, action="store_true", dest="verbose")
-    parser.add_option("-c", "--checkpoint", help="Only reports records past checkpoint; "
-        "default is to report all records.",
-        default=False, action="store_true", dest="checkpoint")
-
-    opts, args = parser.parse_args()
-
-    # Initialize Gratia
-    if not opts.gratia_config or not os.path.exists(opts.gratia_config):
-        raise Exception("Gratia config, %s, does not exist." % opts.gratia_config)
-    Gratia.Initialize(opts.gratia_config)
-
-    if opts.verbose:
-        Gratia.Config.set_DebugLevel(5)
-
-    return opts, args
-
-def jobToJUR(job, server_id):
+def job_to_jur(job, server_id):
+    """Convert a SLURM job record into a Gratia UsageRecord"""
     r = Gratia.UsageRecord("Batch")
 
     # Usage Record
@@ -66,8 +28,7 @@ def jobToJUR(job, server_id):
     # 3 Base Properties
 
     # 3.2 GlobalJobId
-    # "slurm:<hostname>:<job>"
-    #globalJobId="SLURM:" + job['Cluster'] + "_" + job['JobID'] + "_" + job['Submit']
+    # "slurm:<hostname>/<cluster>.<job>"
     r.GlobalJobId('slurm:%s/%s.%s' % (server_id, job['cluster'], job['id_job']))
 
     # 3.3 LocalJobId
@@ -134,218 +95,45 @@ def jobToJUR(job, server_id):
 
     return r
 
-def main():
+class SlurmMeter(SlurmProbe):
+    def parse_opts(self):
 
-    try:
-        opts, args = parse_opts()
-    except Exception, e:
-        print >> sys.stderr, str(e)
-        sys.exit(1)
+        parser = optparse.OptionParser(usage="%prog [options]")
+        parser.add_option("-f", "--gratia_config", help="Location of the Gratia"
+            " config [default: %default].",
+            dest="gratia_config", default="/etc/gratia/slurm/ProbeConfig")
+        parser.add_option("-s", "--sleep", help="Do a random amount of sleep, "
+            "up to the specified number of seconds before running.",
+            dest="sleep", default=0, type="int")
+        parser.add_option("-v", "--verbose", help="Enable verbose logging to "
+            "stdout.",
+            default=False, action="store_true", dest="verbose")
+        parser.add_option("-c", "--checkpoint", help="Only reports records past"
+            " checkpoint; default is to report all records.",
+            default=False, action="store_true", dest="checkpoint")
 
-    # Sanity checks for the probe's runtime environment.
-    GratiaWrapper.CheckPreconditions()
+        # Options are stored into opts/args class variables
+        return parser.parse_args()
 
-    if opts.sleep:
-        rnd = random.randint(1, int(opts.sleep))
-        DebugPrint(2, "Sleeping for %d seconds before proceeding." % rnd)
-        time.sleep(rnd)
+    def main(self):
+        # Loop over completed jobs
+        time_end = None
+        server_id = self.get_db_server_id()
+        for job in self.sacct.completed_jobs(self.checkpoint.val):
+            r = job_to_jur(job, server_id)
+            Gratia.Send(r)
 
-    # Make sure we have an exclusive lock for this probe.
-    GratiaWrapper.ExclusiveLock()
+            # The query sorted the results by time_end, so our last value will
+            # be the greatest
+            time_end = job['time_end']
+            self.checkpoint.val = time_end
 
-    register_gratia()
-
-    # Only process DataFileExpiration days of history
-    # (unless we're resuming from a checkpoint file)
-    checkpoint = int(time.time() - (Gratia.Config.get_DataFileExpiration() * 86400))
-
-    # Read the checkpoint
-    cpfile = None
-    if opts.checkpoint:	
-        checkpoint_file = os.path.join(
-            Gratia.Config.get_WorkingFolder(), "checkpoint")
-        DebugPrint(1, "Resuming from checkpoint in %s" % checkpoint_file)
-        try:
-            cpfile = open(checkpoint_file, 'a+')
-            checkpoint = long(cpfile.readline())
-        except (IOError, ValueError):
-            DebugPrint(1, "Failed to read checkpoint file %s" % checkpoint_file)
-
-    # Server ID - server/port/database
-    server_id = "/".join([
-        Gratia.Config.getConfigAttribute('SlurmDbHost'),
-        Gratia.Config.getConfigAttribute('SlurmDbPort'),
-        Gratia.Config.getConfigAttribute('SlurmDbName'), ])
-
-    # Connect to database
-    conn = MySQLdb.connect(
-        host   = Gratia.Config.getConfigAttribute('SlurmDbHost'),
-        port   = int(Gratia.Config.getConfigAttribute('SlurmDbPort')),
-        user   = Gratia.Config.getConfigAttribute('SlurmDbUser'),
-        passwd = get_password(Gratia.Config.getConfigAttribute('SlurmDbPasswordFile')),
-        db     = Gratia.Config.getConfigAttribute('SlurmDbName'),
-        cursorclass = MySQLdb.cursors.DictCursor)
-
-    cluster = Gratia.Config.getConfigAttribute('SlurmCluster')
-    s = sacct(conn, cluster)
-
-    # Loop over completed jobs
-    time_end = None
-    for job in s.completed_jobs(checkpoint):
-        r = jobToJUR(job, server_id)
-        Gratia.Send(r)
-
-        time_end = job['time_end']
-        write_checkpoint(cpfile, time_end)
-
-    # If we found at least one record, but the time_end has not increased since
-    # the previous run, increase the checkpoint by one so we avoid continually
-    # reprocessing the last records.
-    # (This assumes the probe won't be run more than once per second.)
-    if checkpoint == time_end:
-        write_checkpoint(cpfile, time_end + 1)
-
-def write_checkpoint(fp, val):
-    if (fp):
-        try:
-            fp.truncate(0)
-            fp.write(str(val) + "\n")
-        except IOError:
-            DebugPrint(2, "IOError: Failed to write checkpoint file %s" %
-                fp.name)
-
-def get_password(pwfile):
-    fp = open(pwfile)
-    mode = os.fstat(fp.fileno()).st_mode
-
-    if (stat.S_IMODE(mode) & (stat.S_IRGRP | stat.S_IROTH)) != 0:
-        raise IOError("Password file %s is readable by group or others" %
-            pwfile)
-
-    return fp.readline().rstrip('\n')
-
-def register_gratia():
-
-    Gratia.RegisterReporter("slurm_meter", "%s (tag %s)" % \
-        (prog_revision, prog_version))
-
-    Gratia.setProbeBatchManager("slurm")
-
-class sacct(object):
-    def __init__(self, conn, cluster):
-        self._conn = conn
-
-        cluster = re.sub('\W+', '', cluster)
-        self._cluster = cluster
-
-    def completed_jobs(self, ts):
-        where = 'j.time_end >= %s' % long(ts)
-        return self._jobs(where)
-
-    def running_jobs(self):
-        where = 'j.time_end = 0'
-        return self._jobs(where)
-
-    # Running jobs, grouped by user
-    def running_users(self, ts=None):
-        where = 'j.time_end = 0'
-
-        # Also include users with recently ended jobs
-        if ts is not None:
-            where = where + " OR j.time_end >= %s" % long(ts)
-
-        group = 'id_user'
-        return self._users(where)
-
-    # Convenience functions to resolve uid/gid to user/group
-    def _getUser(self, uid, err=None):
-        try:
-            return pwd.getpwuid(uid)[0]
-        except (KeyError, TypeError):
-            return err
-    def _getGroup(self, gid, err=None):
-        try:
-            return grp.getgrgid(gid)[0]
-        except (KeyError, TypeError):
-            return err
-
-    # Add user/acct if missing (resolving uid/gid)
-    def _addUserInfoIfMissing(self, r):
-        if r['user'] is None:
-            # Set user to info from NSS, or unknown
-            r['user'] = self._getUser(r['id_user'], 'unknown')
-        if r['acct'] is None:
-            # Set acct to info from NSS, or unknown
-            r['acct'] = self._getGroup(r['id_group'], 'unknown')
-
-    def _users(self, where):
-        cursor = self._conn.cursor()
-
-        # See enum job_states in slurm/slurm.h for state values
-        sql = '''SELECT j.id_user
-            , j.id_group
-            , (SELECT SUM(cpus_req)   FROM %(cluster)s_job_table WHERE
-                  id_user = j.id_user AND state IN (0,2)) AS cpus_pending
-            , (SELECT SUM(cpus_alloc) FROM %(cluster)s_job_table WHERE
-                  id_user = j.id_user AND state IN (1)  ) AS cpus_running
-            , a.acct
-            , a.user
-            FROM %(cluster)s_job_table as j
-            LEFT JOIN %(cluster)s_assoc_table AS a ON j.id_assoc = a.id_assoc
-            WHERE %(where)s
-            GROUP BY id_user
-            ORDER BY time_end
-        ''' % { 'cluster': self._cluster, 'where': where }
-
-        DebugPrint(5, "Executing SQL: %s" % sql)
-        cursor.execute(sql)
-
-        for r in cursor:
-            # Add handy data to job record
-            r['cluster'] = self._cluster
-            # Return 0 instead of None where we don't have values
-            if r['cpus_pending'] is None:
-                r['cpus_pending'] = 0
-            if r['cpus_running'] is None:
-                r['cpus_running'] = 0
-            self._addUserInfoIfMissing(r)
-            yield r
-
-    def _jobs(self, where):
-        cursor = self._conn.cursor()
-
-        sql = '''SELECT j.id_job
-            , j.exit_code
-            , j.id_group
-            , j.id_user
-            , j.job_name
-            , j.cpus_alloc
-            , j.partition
-            , j.state
-            , j.time_start
-            , j.time_end
-            , j.time_suspended
-            , a.acct
-            , a.user
-            , MAX(s.max_rss) AS max_rss /* Note: Will underreport jobs containing simultaneous steps */
-            , SUM(s.user_sec) + SUM(s.user_usec)/1000000 AS cpu_user
-            , SUM(s.sys_sec) + SUM(s.sys_usec)/1000000 AS cpu_sys
-            FROM %(cluster)s_job_table as j
-            LEFT JOIN %(cluster)s_assoc_table AS a ON j.id_assoc = a.id_assoc
-            LEFT JOIN %(cluster)s_step_table AS s ON j.job_db_inx = s.job_db_inx
-            WHERE %(where)s
-            GROUP BY id_job
-            ORDER BY time_end
-        ''' % { 'cluster': self._cluster, 'where': where }
-
-        DebugPrint(5, "Executing SQL: %s" % sql)
-        cursor.execute(sql)
-
-        for r in cursor:
-            # Add handy data to job record
-            r['cluster'] = self._cluster
-            self._addUserInfoIfMissing(r)
-            yield r
+        # If we found at least one record, but the time_end has not increased since
+        # the previous run, increase the checkpoint by one so we avoid continually
+        # reprocessing the last records.
+        # (This assumes the probe won't be run more than once per second.)
+        if self.checkpoint.val == time_end:
+            self.checkpoint.val = time_end + 1
 
 if __name__ == "__main__":
-    main()
+    SlurmMeter().main()
