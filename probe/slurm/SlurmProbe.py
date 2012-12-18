@@ -188,7 +188,7 @@ class SlurmCheckpoint(object):
         self._val = long(val)
         if (self._fp):
             self._fp.seek(0)
-            self._fp.write(str(self._val).ljust(20) + "\n")
+            self._fp.write(str(self._val) + "\n")
             self._fp.truncate()
 
     val = property(get_val, set_val)
