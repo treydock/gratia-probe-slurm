@@ -71,7 +71,7 @@ class SlurmTest():
             port   = self.opts.port,
             user   = self.opts.user,
             passwd = self.opts.passwd,
-            db     = 'slurm_acct_db',
+            db     = self.opts.db,
             cursorclass = MySQLdb.cursors.DictCursor)
 
         # A dictionary of dictionaries holding ints
