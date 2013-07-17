@@ -11,13 +11,15 @@
 # Copyright 2013 University of Nebraska-Lincoln. Released under GPL v2.
 ###########################################################################
 
-from SlurmProbe import SlurmAcct
-
-import sys
+import sys, os
 import time
 import optparse
 import MySQLdb, MySQLdb.cursors
 from collections import defaultdict
+
+# Add parent directory to import path
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from SlurmProbe import SlurmAcct
 
 class SlurmTest():
     opts    = None
@@ -74,7 +76,10 @@ class SlurmTest():
             db     = self.opts.db,
             cursorclass = MySQLdb.cursors.DictCursor)
 
-        # A dictionary of dictionaries holding ints
+        total_jobs = 0
+        total_time = 0
+
+        # A dictionary of dictionaries holding ints, default of 0
         total_by_day = defaultdict(lambda: defaultdict(int))
 
         self.sacct = SlurmAcct(self.conn, self.opts.cluster)
@@ -86,15 +91,21 @@ class SlurmTest():
             time_end = time.gmtime(job['time_end'])
 
             day = time.strftime('%Y-%m-%d', time_end)
+            wall = job['cpus_alloc'] * job['wall_time']
 
             total_by_day[day]['jobs'] += 1
-            total_by_day[day]['wall'] += job['cpus_alloc'] * job['wall_time']
+            total_by_day[day]['wall'] += wall
+
+            total_jobs += 1
+            total_time += wall
 
         # Print results
         print "Date      \tJobs   \tHours "
         print "----------\t-------\t-------"
         for d in iter(sorted(total_by_day.iteritems())):
             print "%s\t%d\t%d" % (d[0], d[1]['jobs'], d[1]['wall']/3600)
+        print "----------\t-------\t-------"
+        print "%s\t%d\t%d" % ("total     ", total_jobs, total_time/3600)
 
 if __name__ == "__main__":
     SlurmTest().main()
