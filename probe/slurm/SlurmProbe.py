@@ -106,7 +106,7 @@ class SlurmProbe:
             passwd = self.get_password(Gratia.Config
                             .getConfigAttribute('SlurmDbPasswordFile')),
             db     = Gratia.Config.getConfigAttribute('SlurmDbName'),
-            cursorclass = MySQLdb.cursors.DictCursor)
+            cursorclass = MySQLdb.cursors.SSDictCursor)
 
     def get_password(self, pwfile):
         """Read a password from a given file, checking permissions"""
