@@ -14,15 +14,14 @@
 
 import sys, os, stat
 import time, random
-import pwd, grp
+import datetime, dateutil.parser
+import subprocess
+import re
+from decimal import Decimal
 
 from gratia.common.Gratia import DebugPrint
 import gratia.common.GratiaWrapper as GratiaWrapper
 import gratia.common.Gratia as Gratia
-
-import MySQLdb
-import MySQLdb.cursors
-import re
 
 prog_version = "%%%RPMVERSION%%%"
 prog_revision = '$Revision$'
@@ -32,7 +31,6 @@ class SlurmProbe:
     opts       = None
     args       = None
     checkpoint = None
-    conn       = None
     cluster    = None
     sacct      = None
 
@@ -63,6 +61,9 @@ class SlurmProbe:
         # Make sure we have an exclusive lock for this probe.
         GratiaWrapper.ExclusiveLock()
 
+        # Get sacct path
+        self.sacct_path = self.get_sacct_path()
+
         self.register_gratia("slurm_meter")
 
         # Find the checkpoint filename (if enabled)
@@ -80,49 +81,22 @@ class SlurmProbe:
         if self.checkpoint.val is None:
             self.checkpoint.val = int(time.time() - (Gratia.Config.get_DataFileExpiration() * 86400))
 
-        # Connect to database
-        self.conn = self.get_db_conn()
-
         self.cluster = Gratia.Config.getConfigAttribute('SlurmCluster')
-        self.sacct = SlurmAcct(self.conn, self.cluster)
+        self.end = self.opts.end
+        self.sacct = SlurmAcct(self.sacct_path, self.cluster, self.end)
 
     def parse_opts(self):
         """Hook to parse command-line options"""
         return
 
-    def get_db_server_id(self):
-        """Return database server ID: server/port/database"""
-        return "/".join([
-            Gratia.Config.getConfigAttribute('SlurmDbHost'),
-            Gratia.Config.getConfigAttribute('SlurmDbPort'),
-            Gratia.Config.getConfigAttribute('SlurmDbName'), ])
+    def get_server_id(self):
+        """Return database server ID: SLURM/cluster"""
+        #TODO
+        return "SLURM/%s" % self.cluster
 
-    def get_db_conn(self):
-        """Return a database connection"""
-        return MySQLdb.connect(
-            host   = Gratia.Config.getConfigAttribute('SlurmDbHost'),
-            port   = int(Gratia.Config.getConfigAttribute('SlurmDbPort')),
-            user   = Gratia.Config.getConfigAttribute('SlurmDbUser'),
-            passwd = self.get_password(Gratia.Config
-                            .getConfigAttribute('SlurmDbPasswordFile')),
-            db     = Gratia.Config.getConfigAttribute('SlurmDbName'),
-            cursorclass = MySQLdb.cursors.SSDictCursor)
-
-    def get_password(self, pwfile):
-        """Read a password from a given file, checking permissions"""
-        fp = open(pwfile)
-        mode = os.fstat(fp.fileno()).st_mode
-
-        if (stat.S_IMODE(mode) & (stat.S_IRGRP | stat.S_IROTH)) != 0:
-            raise IOError("Password file %s is readable by group or others" %
-                pwfile)
-
-        return fp.readline().rstrip('\n')
-
-    def get_slurm_version(self):
-        prog = "srun --version"
+    def get_sacct_path(self):
+        prog = "sacct"
         path = Gratia.Config.getConfigAttribute("SlurmLocation")
-        fd = None
 
         # Look for the program on the $PATH
         cmd = prog
@@ -132,11 +106,15 @@ class SlurmProbe:
             c = os.path.join(path, "bin", prog)
             if os.path.exists(c):
                 cmd = c
+        return cmd
+
+    def get_slurm_version(self):
+        prog = "%s --version" % self.sacct_path
 
         fd = os.popen(prog)
         output = fd.read()
         if fd.close():
-            raise Exception("Unable to invoke %s" % cmd)
+            raise Exception("Unable to invoke %s" % prog)
 
         name, version = output.split()
         return version
@@ -194,153 +172,189 @@ class SlurmCheckpoint(object):
     val = property(get_val, set_val)
 
 class SlurmAcct(object):
-    def __init__(self, conn, cluster):
-        self._conn = conn
+    def __init__(self, sacct_path, cluster, end):
+        self._sacct_path = sacct_path
 
         cluster = re.sub('\W+', '', cluster)
         self._cluster = cluster
+        self._end = end
 
     def completed_jobs(self, ts):
         """Completed jobs, ordered by completion time"""
 
-        # We need *all* job_table records for jobs which completed inside the
-        # time range. This needs to include jobs which were preempted and
-        # resumed.
-        where = '''id_job IN (
-                SELECT id_job FROM %(cluster)s_job_table
-                WHERE time_start > 0 AND time_end >= %(end)s
-            )
-        ''' % { 'cluster': self._cluster, 'end': long(ts) }
-
-        # The job is not running and has not been requeued
-        having = 'MIN(j.time_end) > 0 AND MIN(j.time_start) > 0'
-
-        return self._jobs(where, having)
+        states = 'CANCELLED,COMPLETED,FAILED,NODE_FAIL,PREEMPTED,TIMEOUT'
+        start = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(ts))
+        return self._get_jobs(states=states, start=start)
 
     def running_jobs(self):
-        where = 'j.time_end = 0'
-        return self._jobs(where)
+        states = 'RUNNING'
+        return self._get_jobs(states=states, start=None)
 
     def running_users(self, ts=None):
         """Running jobs, grouped by user, ordered by completion time"""
-        where = 'j.time_end = 0'
+        states = 'RUNNING,PENDING,SUSPENDED'
+        if ts:
+            start = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(ts))
+        else:
+            start = None
+        return self._get_users(states=states, start=start)
 
-        # Also include users with recently ended jobs
-        if ts is not None:
-            where = where + " OR j.time_end >= %s" % long(ts)
+    def _get_jobs(self, states, start):
+        cmd = [
+            self._sacct_path, '--allusers', '--parsable2', '--noheader',
+            '--clusters', self._cluster,
+            '--state', states,
+            '--format',
+            'account,cluster,systemcpu,usercpu,alloccpus,exitcode,jobid,jobname,maxrss,partition,state,end,start,suspended,user,elapsed',
+        ]
+        if start is not None:
+            cmd += ['--start', start]
+            cmd += ['--end', self._end]
+        DebugPrint(0, "Executing SLURM command: %s" % " ".join(cmd))
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, err = process.communicate()
+        exit_code = process.returncode
+        if exit_code != 0:
+            raise Exception("Error executing sacct: %S" % err)
 
-        return self._users(where)
+        _jobs = {}
+        for line in out.split(os.linesep):
+            _line = line.strip()
+            if not _line:
+                continue
+            _data = _line.split('|')
 
-    def _get_user(self, uid, err=None):
-        """Convenience functions to resolve uid to user"""
-        try:
-            return pwd.getpwuid(uid)[0]
-        except (KeyError, TypeError):
-            return err
-    def _get_group(self, gid, err=None):
-        """Convenience function to resolve gid to group"""
-        try:
-            return grp.getgrgid(gid)[0]
-        except (KeyError, TypeError):
-            return err
+            # Process JobID first and modify behavior if this is a job step
+            # The parent jobID will contain sum of values such as SystemCPU and UserCPU
+            # MaxRSS is invalid for parent job, so must collect from job steps
+            _job_id_s = _data[6].split('.')
+            _job_id = _job_id_s[0]
+            if len(_job_id_s) > 1:
+                _job_step = _job_id_s[1]
+            else:
+                _job_step = None
+            _job = _jobs.get(_job_id, {})
 
-    def _addUserInfoIfMissing(self, r):
-        """Add user/acct if missing (resolving uid/gid)"""
-        if r['user'] is None:
-            # Set user to info from NSS, or unknown
-            r['user'] = self._get_user(r['id_user'], 'unknown')
-        if r['acct'] is None:
-            # Set acct to info from NSS, or unknown
-            r['acct'] = self._get_group(r['id_group'], 'unknown')
+            # Get MaxRSS from steps associated with parent job
+            if 'max_rss' not in _job:
+                _job['max_rss'] = 0
+            if _job_step:
+                _job['max_rss'] += self._to_kb(_data[8])
+                continue
 
-    def _users(self, where):
-        cursor = self._conn.cursor()
+            _job['id_job'] = _job_id
+            _job['acct'] = _data[0]
+            _job['cluster'] = _data[1]
+            _job['cpu_sys'] = self._duration_to_sec(_data[2])
+            _job['cpu_user'] = self._duration_to_sec(_data[3])
+            _job['cpus_alloc'] = _data[4]
+            _job['exit_code'] = _data[5].split(':')[0]
+            _job['job_name'] = _data[7]
+            _job['partition'] = _data[9]
+            _job['state'] = _data[10]
+            _job['time_end'] = self._time_to_epoch(_data[11])
+            _job['time_start'] = self._time_to_epoch(_data[12])
+            _job['time_suspended'] = self._duration_to_sec(_data[13])
+            _job['user'] = _data[14]
+            _job['wall_time'] = self._duration_to_sec(_data[15])
+            _jobs[_job_id] = _job
 
-        # See enum job_states in slurm/slurm.h for state values
-        sql = '''SELECT j.id_user
-            , j.id_group
-            , (SELECT SUM(cpus_req)   FROM %(cluster)s_job_table WHERE
-                  id_user = j.id_user AND state IN (0,2)) AS cpus_pending
-            , (SELECT SUM(cpus_alloc) FROM %(cluster)s_job_table WHERE
-                  id_user = j.id_user AND state IN (1)  ) AS cpus_running
-            , MAX(j.time_end) AS time_end
-            , a.acct
-            , a.user
-            FROM %(cluster)s_job_table as j
-            LEFT JOIN %(cluster)s_assoc_table AS a ON j.id_assoc = a.id_assoc
-            WHERE %(where)s
-            GROUP BY id_user
-            ORDER BY time_end
-        ''' % { 'cluster': self._cluster, 'where': where }
+        # Sort values by time_end
+        _jobs = sorted(_jobs.values(), key=lambda k: k['time_end'])
+        return _jobs
 
-        DebugPrint(5, "Executing SQL: %s" % sql)
-        cursor.execute(sql)
+    def _get_users(self, states, start):
+        cmd = [
+            self._sacct_path, '--allusers', '--parsable2', '--noheader', '--allocations',
+            '--clusters', self._cluster,
+            '--state', states,
+            '--format',
+            'user,cluster,alloccpus,state,end',
+        ]
+        if start is not None:
+            cmd += ['--start', start]
+            cmd += ['--end', self._end]
+        DebugPrint(0, "Executing SLURM command: %s" % " ".join(cmd))
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+        out, err = process.communicate()
+        exit_code = process.returncode
+        if exit_code != 0:
+            raise Exception("Error executing sacct: %S" % err)
 
-        for r in cursor:
-            # Add handy data to job record
-            r['cluster'] = self._cluster
-            # Return 0 instead of None where we don't have values
-            if r['cpus_pending'] is None:
-                r['cpus_pending'] = 0
-            if r['cpus_running'] is None:
-                r['cpus_running'] = 0
-            self._addUserInfoIfMissing(r)
-            yield r
+        _users = {}
+        for line in out.split(os.linesep):
+            _line = line.strip()
+            if not _line:
+                continue
+            _data = _line.split('|')
 
-    def _jobs(self, where, having = '1=1'):
-        cursor = self._conn.cursor()
+            _username = _data[0]
+            if _data[4] == 'Unknown':
+                _time_end = 0
+            else:
+                _time_end = self._time_to_epoch(_data[4])
+            _user = _users.get(_username, {})
+            if _username not in _users:
+                _user = {}
+                _user['user'] = _username
+                _user['cluster'] = _data[1]
+                _user['cpus_pending'] = 0
+                _user['cpus_running'] = 0
+                _user['time_end'] = _time_end
+            else:
+                if _time_end > _user['time_end']:
+                    _user['time_end'] = _time_end
+            _state = _data[3]
+            _cpus = int(_data[2])
+            if _state in ['PENDING', 'SUSPENDED']:
+                _user['cpus_pending'] += _cpus
+            else:
+                _user['cpus_running'] += _cpus
+            _users[_username] = _user
 
-        # Note: When jobs are preempted, multiple cluster_job_table records
-        #       are inserted, each with distinct start and end times.
-        #       We consider the walltime to be the total time running,
-        #       adding up all the records.
-        #
-        #       A job may have many job_table rows, which have many step_table
-        #       rows.
-        #       This is why we sum twice when calculating the CPU usages. Once
-        #       to total the CPU usage of steps for a job_table row, then
-        #       again to roll up each job_table row subtotal into a job total.
+        # Sort values by time_end
+        _users = sorted(_users.values(), key=lambda k: k['time_end'])
+        return _users
 
-        sql = '''SELECT j.id_job
-            , j.exit_code
-            , j.id_group
-            , j.id_user
-            , j.job_name
-            , j.cpus_alloc
-            , j.partition
-            , j.state
-            , MIN(j.time_start) AS time_start
-            , MAX(j.time_end) AS time_end
-            , SUM(j.time_suspended) AS time_suspended
-            , SUM(j.time_end - j.time_start - j.time_suspended) AS wall_time
-            , a.acct
-            , a.user
-            , MAX(( SELECT MAX(s.max_rss)
-                FROM %(cluster)s_step_table s
-                WHERE s.job_db_inx = j.job_db_inx
-                /* Note: Will underreport mem for jobs with simultaneous steps */
-              )) AS max_rss
-            , SUM(( SELECT SUM(s.user_sec) + SUM(s.user_usec/1000000)
-                FROM %(cluster)s_step_table s
-                WHERE s.job_db_inx = j.job_db_inx
-              )) AS cpu_user
-            , SUM(( SELECT SUM(s.sys_sec) + SUM(s.sys_usec/1000000)
-                FROM %(cluster)s_step_table s
-                WHERE s.job_db_inx = j.job_db_inx
-              )) AS cpu_sys
-            FROM %(cluster)s_job_table as j
-            LEFT JOIN %(cluster)s_assoc_table AS a ON j.id_assoc = a.id_assoc
-            WHERE %(where)s
-            GROUP BY id_job
-            HAVING %(having)s
-            ORDER BY j.time_end
-        ''' % { 'cluster': self._cluster, 'where': where, 'having': having }
+    def _duration_to_sec(self, t):
+        # Format can be DD-HH:MM:SS or HH:MM:SS or MM:SS
+        m = re.search(r"(([\d]+)?-)?([\d]+)?:?([\d]{2})\:([\d\.]+)", t)
+        sec = Decimal('0.0')
+        if not m:
+            return sec
+        #DebugPrint(0, "SLURM duration -> sec: %s -> %s" % (t, m.groups()))
+        # Days - optional
+        if m.group(2):
+            sec += Decimal('86400.0') * Decimal(m.group(2))
+        # Hours - optional
+        if m.group(3):
+            sec += Decimal('3600.0') * Decimal(m.group(3))
+        # Minutes
+        sec += Decimal('60.0') * Decimal(m.group(4))
+        # Seconds
+        sec += Decimal(m.group(5))
 
-        DebugPrint(5, "Executing SQL: %s" % sql)
-        cursor.execute(sql)
+        return sec
 
-        for r in cursor:
-            # Add handy data to job record
-            r['cluster'] = self._cluster
-            self._addUserInfoIfMissing(r)
-            yield r
+    def _time_to_epoch(self, t):
+        _epoch = dateutil.parser.parse(t).strftime("%s")
+        return int(_epoch)
+
+    def _to_kb(self, s):
+        m = re.search(r"([\d]+)([\D])", s)
+        #DebugPrint(0, "SLURM to kb: %s -> %s" % (s, m.groups()))
+        _val = int(m.group(1))
+        _suf = m.group(2)
+        if _suf == 'K':
+            _power = 0
+        elif _suf == 'M':
+            _power = 1
+        elif _suf == 'G':
+            _power = 2
+        elif _suf == 'T':
+            _power = 3
+        else:
+            return 0
+
+        _kb = _val * 1024**_power
+        return _kb

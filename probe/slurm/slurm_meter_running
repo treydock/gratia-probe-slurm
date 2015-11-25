@@ -65,6 +65,8 @@ class SlurmMeterRunning(SlurmProbe):
         parser.add_option("-c", "--checkpoint", help="Only reports records past"
             " checkpoint; default is to report all records.",
             default=False, action="store_true", dest="checkpoint")
+        parser.add_option("-d", "--debug", help="Enable debug logging and disable sending data",
+            default=False, action="store_true", dest="debug")
 
         # Options are stored into opts/args class variables
         return parser.parse_args()
@@ -72,17 +74,22 @@ class SlurmMeterRunning(SlurmProbe):
     def main(self):
         time_now = datetime.datetime.utcnow()
         time_end = None
-        server_id = self.get_db_server_id()
+        server_id = self.get_server_id()
         slurm_version = self.get_slurm_version()
 
         # Send ComputeElement
-        Gratia.Send(get_ce(server_id, slurm_version, self.cluster, time_now))
+        if not self.opts.debug:
+            Gratia.Send(get_ce(server_id, slurm_version, self.cluster, time_now))
 
         # Loop over running jobs summarized by user, sending CERs
         # Also include users with jobs completed since the checkpoint
         for user in self.sacct.running_users(self.checkpoint.val if self.opts.checkpoint else None):
-            r = user_to_cer(user, server_id, time_now)
-            Gratia.Send(r)
+            if self.opts.debug:
+                from pprint import pprint
+                pprint(user)
+            else:
+                r = user_to_cer(user, server_id, time_now)
+                Gratia.Send(r)
 
             # The query sorted the results by time_end, so our last value will
             # be the greatest
