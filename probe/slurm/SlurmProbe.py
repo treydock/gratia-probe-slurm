@@ -215,7 +215,7 @@ class SlurmAcct(object):
         out, err = process.communicate()
         exit_code = process.returncode
         if exit_code != 0:
-            raise Exception("Error executing sacct: %S" % err)
+            raise Exception("Error executing sacct: %s" % err)
 
         _jobs = {}
         for line in out.split(os.linesep):
@@ -239,7 +239,10 @@ class SlurmAcct(object):
             if 'max_rss' not in _job:
                 _job['max_rss'] = 0
             if _job_step:
-                _job['max_rss'] += self._to_kb(_data[8])
+                if _job['max_rss']:
+                    _job['max_rss'] += self._to_kb(_data[8])
+                else:
+                    _job['max_rss'] += 0
                 continue
 
             _job['id_job'] = _job_id
@@ -279,7 +282,7 @@ class SlurmAcct(object):
         out, err = process.communicate()
         exit_code = process.returncode
         if exit_code != 0:
-            raise Exception("Error executing sacct: %S" % err)
+            raise Exception("Error executing sacct: %s" % err)
 
         _users = {}
         for line in out.split(os.linesep):
@@ -342,6 +345,8 @@ class SlurmAcct(object):
 
     def _to_kb(self, s):
         m = re.search(r"([\d]+)([\D])", s)
+        if not m:
+            return 0
         #DebugPrint(0, "SLURM to kb: %s -> %s" % (s, m.groups()))
         _val = int(m.group(1))
         _suf = m.group(2)
