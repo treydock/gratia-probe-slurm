@@ -324,8 +324,9 @@ class SlurmAcct(object):
         m = re.search(r"(([\d]+)?-)?([\d]+)?:?([\d]{2})\:([\d\.]+)", t)
         sec = Decimal('0.0')
         if not m:
+            DebugPrint(0, "SLURM duration -> sec: unable to parse %s" % t)
             return sec
-        #DebugPrint(0, "SLURM duration -> sec: %s -> %s" % (t, m.groups()))
+        DebugPrint(0, "SLURM duration -> sec: %s -> %s" % (t, m.groups()))
         # Days - optional
         if m.group(2):
             sec += Decimal('86400.0') * Decimal(m.group(2))
@@ -344,12 +345,13 @@ class SlurmAcct(object):
         return int(_epoch)
 
     def _to_kb(self, s):
-        m = re.search(r"([\d]+)([\D])", s)
+        m = re.search(r"(\d+(\.\d+)?)([\D])", s)
         if not m:
+            DebugPrint(0, "SLURM to kb: unable to parse %s" % s)
             return 0
-        #DebugPrint(0, "SLURM to kb: %s -> %s" % (s, m.groups()))
+        DebugPrint(0, "SLURM to kb: %s -> %s" % (s, m.groups()))
         _val = int(m.group(1))
-        _suf = m.group(2)
+        _suf = m.group(3)
         if _suf == 'K':
             _power = 0
         elif _suf == 'M':
